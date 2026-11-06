@@ -70,11 +70,11 @@ jobs:
     steps:
       - name: Preparar chave SSH
         env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" | tr -d '\r' > ~/.ssh/ec2_key.pem
+          echo "$EC2_SSH_KEY_B64" | base64 -d > ~/.ssh/ec2_key.pem
           chmod 600 ~/.ssh/ec2_key.pem
           ssh-keygen -y -f ~/.ssh/ec2_key.pem > /dev/null
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
