@@ -35,8 +35,6 @@ jobs:
     name: 2. Build e push no ECR
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,16 +50,15 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Definir nome da imagem (tag = SHA do commit)
-        id: meta
-        run: echo "image=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
-      - name: Build e push
+      - name: Build e push (tag = SHA do commit)
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          SHA: ${{ github.sha }}
         run: |
-          docker build -t "${{ steps.meta.outputs.image }}" \
-                       -t "${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest" .
-          docker push "${{ steps.meta.outputs.image }}"
-          docker push "${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest"
+          docker build -t "$REGISTRY/$REPOSITORY:$SHA" -t "$REGISTRY/$REPOSITORY:latest" .
+          docker push "$REGISTRY/$REPOSITORY:$SHA"
+          docker push "$REGISTRY/$REPOSITORY:latest"
 
   deploy:
     name: 3. Deploy na EC2
@@ -74,23 +71,31 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           mkdir -p ~/.ssh
-          echo "$EC2_SSH_KEY_B64" | base64 -d > ~/.ssh/ec2_key.pem
+          printf '%s' "$EC2_SSH_KEY_B64" | tr -d ' \r\n' | base64 -d > ~/.ssh/ec2_key.pem
           chmod 600 ~/.ssh/ec2_key.pem
           ssh-keygen -y -f ~/.ssh/ec2_key.pem > /dev/null
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
       - name: Atualizar contêiner na EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          REGION: ${{ secrets.AWS_REGION }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          SHA: ${{ github.sha }}
         run: |
-          ssh -i ~/.ssh/ec2_key.pem "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
-            bash -s -- "${{ needs.build-and-push.outputs.image }}" "${{ secrets.AWS_REGION }}" "${{ env.CONTAINER_NAME }}" <<'REMOTE'
+          ssh -i ~/.ssh/ec2_key.pem "$EC2_USER@$EC2_HOST" \
+            bash -s -- "$SHA" "$REGION" "$REPOSITORY" "$CONTAINER_NAME" <<'REMOTE'
           set -euo pipefail
-          IMAGE="$1"; REGION="$2"; NAME="$3"
-          REGISTRY="${IMAGE%%/*}"
+          SHA="$1"; REGION="$2"; REPO="$3"; NAME="$4"
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          REGISTRY="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+          IMAGE="$REGISTRY/$REPO:$SHA"
 
           echo ">> Login do Docker no ECR (via IAM Role da instância)"
           aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
-          echo ">> Baixando $IMAGE"
+          echo ">> Baixando imagem do commit $SHA"
           docker pull "$IMAGE"
 
           echo ">> Substituindo contêiner anterior"
@@ -110,4 +115,4 @@ jobs:
           REMOTE
 
       - name: Resumo
-        run: echo "Deploy concluído. Imagem ${{ needs.build-and-push.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Deploy concluído. Commit ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
